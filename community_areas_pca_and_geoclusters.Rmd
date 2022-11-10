@@ -1,0 +1,214 @@
+---
+title: "Chicago Community Area Health Statistics: PCA and Spatial Clustering Analysis"
+author: "Robert Hand"
+date: "3/25/2022"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+header-includes: \usepackage{setspace}\doublespacing
+---
+
+OVERVIEW. 
+
+--------------
+Find needed data and shape file here: Download csv from first link, download "shapefile" under "export" at second link. 
+
+https://data.cityofchicago.org/Health-Human-Services/Public-Health-Statistics-Selected-public-health-in/iqnk-2tcu
+
+https://data.cityofchicago.org/Facilities-Geographic-Boundaries/Boundaries-Community-Areas-current-/cauq-8yn6
+
+READ DATA LOADING STEP FOR DATA LOADING GUIDE. 
+
+------------------
+
+This project used the Selected Public Health Statistics data from the City of Chicago Data Portal. 
+
+The data includes 27 measures of overall health of a wide variety for each of Chicago’s 77 community areas. 
+
+The purpose of this project was to see what insights about these neighborhoods could be gleaned through principal component analysis, since there are a large number of variables which may have some high correlations. 
+
+PCA of 23 correlated scaled variables resulted in only two principal components accounting for 75% of all the variance in the data, with the first principal component alone accounting for 57%. A screeplot illustrates the sharp drop in the variance explained by components. 
+
+Since the first two components account for 75% alone, a biplot was constructed to see what insights could be gained from visualizing these. The first biplot shows some insights from the data reduction.
+
+Component 1 can be visually seen as almost two elements, income and overall health and safety, determining the component which accounts for over half of all variance alone. These have opposite directions, indicating an inverse relationship between health and safety, and income, for a community area.  
+
+Component 2 to illustrate an inverse relationship between income and another grouping of housing, education, and birthrates, within a community area.  
+
+Neighborhood clusters seem to emerge in the graph. color coding the neighborhoods in these clusters and adding 95% confidence ellipses for the groups to the biplot gives a visual illustration of these three groupings. 
+
+To further visualize this, the groupings were plotted onto a map of the Chicago community areas by color code. This shows a clear geographic pattern to these groups. 
+
+Following packages are needed to run this file. 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) 
+knitr::opts_chunk$set(fig.width=12, fig.height=8) 
+library(tidyverse)
+library(ggbiplot)
+library(sf)
+library(corrplot)
+library(knitr)
+library(gt)
+
+```
+
+
+Data Loading. Need the selected public health indicates by community area data file from the city of Chicago data portal and the shape file for the 77 official Chicago community areas, also easily publicly available. 
+
+```{r}
+
+data <- read.csv('Public_Health_Statistics_-_Selected_public_health_indicators_by_Chicago_community_area_-_Historical.csv', header = TRUE, stringsAsFactors = FALSE) #add your filepath or be sure to set directory to file location. 
+
+#insert actual filepath to the location of the shapefile where it says "insert filepath here". 
+map <- st_read("insert filepath here/geo_export_cceb8ce1-c228-4e57-a01b-9cea710b9da7.shp")
+
+
+```
+
+
+Data Cleaning
+
+The data had 12 communities with missing data for the Gonorrhea case counts in males and females. 
+According to the data descriptions file these communities reported fewer than five cases total. Therefore, setting to zero. 
+```{r Addressing Missing Values, echo=TRUE}
+
+data %>% select(Community.Area.Name, Gonorrhea.in.Males) %>% filter(Gonorrhea.in.Males == '.') %>% gt()
+#12 communities with "." reported 5 or fewer cases. 
+
+data %>% select(Community.Area.Name, Gonorrhea.in.Females) %>% filter(is.na(Gonorrhea.in.Females))  %>% gt()
+#12 communities with NA, reported 5 or fewer cases.
+
+data %>% select(Community.Area.Name,Gonorrhea.in.Females,Gonorrhea.in.Males) %>% filter(is.na(Gonorrhea.in.Females) | Gonorrhea.in.Males == '.')  %>% gt()
+#fewer than five is for same community areas for males and females, 
+#except for Dunning and McKinley Park. 
+
+data[data == '.'] <- 0 #setting "missing" to zero since these mean fewer than five cases. 
+data[is.na(data)] <- 0
+data <- data %>% mutate(Gonorrhea.in.Males = as.numeric(Gonorrhea.in.Males)) 
+#making numeric. Was not when read in because of the '.' for missing data. 
+data <- data %>% mutate(Per.Capita.Income = as.numeric(Per.Capita.Income)) 
+#read in as integer, just wanted to also make it numeric. 
+
+
+```
+
+
+EDA.
+Now that the data is prepped for analysis, some initial assessment of the variable correlations. 
+I expect there may be some high correlations between the variables. 
+
+```{r Assessing Correlations, echo=TRUE}
+#correlations for all 
+cor <- cor(data[ ,3:29])
+
+#visualize
+par(mar=(c(5,5,5,5)))
+corrplot(abs(cor), method = "color", tl.cex=.5)
+#took absolute value just to make the overall color scheme easier to interpret in terms of magnitude of the correlations. 
+#Just looking at the color scheme of this plot overall, you can see there are a number of large correlations. 
+
+#doing absolute values just to more easily look at magnitude. 
+mean(abs(cor))
+#mean correlation of 0.47. 
+median(abs(cor))
+#median of 0.49. 
+hist(abs(cor), main = "Absolute Value of Variable Correlations (red bar=mean)", xlab = "Absolute Value of Correlation", col = "blue")
+abline(v=0.47,col="red",lwd=10)
+#there are quite a few large ones.  
+
+cor_reduced <- cor 
+#check just the correlations with absolute values above 0.7, strong correlations. 
+cor_reduced[abs(cor_reduced) < .7 | cor==1] <- NA #set to NA if not in that range. 
+cor_reduced <- as.data.frame(as.table(cor_reduced)) #make into a table format. 
+cor_reduced <- cor_reduced %>% filter(!is.na(cor_reduced$Freq)) #drop the NAs. 
+cor_reduced <- cor_reduced[!duplicated(cor_reduced$Freq),] #drop duplicates - showing same correlations twice. 
+colnames(cor_reduced) <- c('Variable_1', 'Variable_2', 'Correlation') #update colnames. 
+
+dim(cor_reduced) #have 64 correlations after removing double counted duplicates and self-correlations that are above 0.7 
+
+#counts of variables with correlations over .7 
+cor_reduced %>% select(Variable_1) %>% group_by(Variable_1) %>% tally(sort = T) %>% kable()
+cor_reduced %>% select(Variable_2) %>% group_by(Variable_2) %>% tally(sort = T) %>% kable()
+
+#plot of some more interesting ones.
+par(mar = c(15,15,5,15))
+barplot(abs(cor_reduced$Correlation[c(4,8,15,16,17,18,19,29)]), main = "Some Selected Large Correlations", xlab = "Correlation", names.arg = c(paste(cor_reduced$Variable_1[c(4,8,15,16,17,18,19,29)], cor_reduced$Variable_2[c(4,8,15,16,17,18,19,29)], sep = " and ")), horiz = TRUE, cex.names = .8, las = 1,col = "green")
+
+#interestingly the above .7s included at least one instance of every one of the variables except for 
+#childhood blood lead level, childhood lead poisoning, tuberculosis, prenatal care beginning in first trimester, and 
+#breast cancer in females. 
+
+#visualize overall correlation level for these ones:  
+cor2 <- cor
+cor2 <- as.data.frame(as.table(cor2))
+cor2 <- cor2[!duplicated(cor2$Freq),]
+tb <- cor2 %>% filter(Var2=="Tuberculosis")
+bc <- cor2 %>% filter(Var2=="Breast.cancer.in.females")
+cl <- cor2 %>% filter(Var2=="Childhood.Lead.Poisoning")
+cb <- cor2 %>% filter(Var2=="Childhood.Blood.Lead.Level.Screening")
+pn <- cor2 %>% filter(Var2=="Prenatal.Care.Beginning.in.First.Trimester")
+par(mar = c(4,2,2,2))
+boxplot(abs(tb$Freq),abs(bc$Freq),abs(cl$Freq),abs(cb$Freq),abs(pn$Freq),names = c("Tuberculosis","Breast Cancer","Childhood Lead Poisoning","Childhood Blood Lead","Prenatal Care First Trimester"), main = "Low Cor Variables", ylab="Correlation", col = "Red", ylab="Correlation")  #you can 
+#they are pretty low as a whole, so  going to leave them out of the PCA and focus on the other variables which have stronger correlations. 
+
+```
+
+Principal Component Analysis
+
+```{r PCA, echo=TRUE}
+pca <- prcomp(data[,c(3:5,7:9,11:18,21:22,24:29)],scale. = TRUE) 
+summary(pca)
+
+#first two components alone explain about 75% of the variance.
+
+#One on its own accounts for about 57%.  
+
+screeplot(pca, npcs = 22,col="blue",main = "Variances vs. Number of Components") 
+#scree plot visualization. 
+#See a really steep drop from one to two and then from two onward. 
+
+#biplot since the first two are very large to visualize this. 
+ggbiplot(pca, labels = data$Community.Area.Name, varname.size = 4, obs.scale = 1, varname.adjust = 1.5)
+
+#Can see the first component showing health and safety together versus income. 
+
+#second component mainly showing housing, birthrate and education versus income. 
+
+#can see some potential grouping of neighborhoods. 
+
+#creating codings. Was tedious so put in C for a bunch of them, once they 
+#had color it was easier to see, and used case when to update to appropriate labels
+#as needed. 
+
+z <- c("A","B","A","A","A","A","A","A","A","A","A","A","A","B","A","A","A","B","B","B","B","A","C","A","C","C","C","A","C","B","C","A","A","A","C","C","C","C","A","C","A","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C","C")
+groupings <- cbind(data$Community.Area.Name,z)
+groupings <- as.data.frame(groupings)
+groupings <- groupings %>% mutate(
+  z = case_when(
+                groupings$V1 %in% c("Austin","North Lawndale","Humboldt Park")~"C",
+                groupings$V1 %in% c("Kenwood","Beverly","Mount Greenwood","Hyde Park","Edgewater","Near West Side","Bridgeport","Garfield Ridge","Clearing","West Town","Hegewisch","Ashburn","Logan Square","Portage Park","O'Hare")~"A",
+                groupings$V1 %in% c("West Lawn","McKinley Park","Archer Heights","East Side","West Elsdon","Lower West Side","Brighton Park","Gage Park","South Lawndale")~"B",
+                TRUE ~ z
+                )
+)
+
+ggbiplot(pca, labels = data$Community.Area.Name, varname.size = 4, obs.scale = 1, varname.adjust = 1.5, groups = groupings$z, ellipse = TRUE, ellipse.prob = .95)
+
+#with color coding and 95% probability ellipses for each grouping,
+#you can see three pretty well delineated neighborhood groupings. 
+
+```
+Visualization on Chicago community areas map
+
+```{r}
+#mapping these color codes onto a Chicago neighborhood map. 
+#shows this aligns with clear geographic clustering, 
+#with a few exceptions, most of which fall in multiple ellipses, such as Hegeswich. 
+
+str(map)
+groupings <- groupings %>% mutate(community = toupper(V1))
+together <- inner_join(map,groupings)
+ggplot(together) + geom_sf(aes(fill = z))
+```
+
