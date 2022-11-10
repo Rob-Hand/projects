@@ -12,7 +12,7 @@ https://www.kaggle.com/competitions/spaceship-titanic/data
 
 ---------------------------------------------------------
 
-In file I write a function to do a lasso on a titanic spaceshipo input data with k-fold cv for 5 folds, choosing lambda by cross validation within each fold. Then I apply the function to all five of the imputed datasets. Then, using the sample proportion of transported as a threshold I assign each of these to a class of transported or not for each of the five groups. Then assign the final predicted class by majority vote: whichever class more of the five assigned that observation to. 
+In file I write a function to do a lasso on a titanic spaceship input data with k-fold cv for 5 folds, choosing lambda by cross validation within each fold. Then I apply the function to all five of the imputed datasets. Then, using the sample proportion of transported as a threshold I assign each of these to a class of transported or not for each of the five groups. Then assign the final predicted class by majority vote: whichever class more of the five assigned that observation to. 
 
 Before fitting the lasso I used the mice package to perform multiple imputation on the missing values in the data, and separate some variables into multiple vars.  
 I was just interested in how well this method would work. It resulted in a prediction accuracy of 79.2 percent. 
