@@ -22,6 +22,7 @@ library(factoextra)
 library(ggbiplot)
 ```
 
+The data file "water.csv" can be found in this repository under files. It was constructed from publicly available UN data on water, HDI and Gender equality. 
 
 Data Cleanup
 ```{r fig.out.width="150%"}
