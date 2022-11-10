@@ -12,7 +12,8 @@ header-includes: \usepackage{setspace}\doublespacing
 DATA AND PACKAGES
 
 --------------
-Find needed data and shape file here: Download csv from first link, download "shapefile" zipe file under "export" at second link. 
+CSV and shape files are in this repository under files. They can also be accessed at the following links. 
+To access from links, download csv from first link, download "shapefile" zipe file under "export" at second link. 
 
 https://data.cityofchicago.org/Health-Human-Services/Public-Health-Statistics-Selected-public-health-in/iqnk-2tcu
 
