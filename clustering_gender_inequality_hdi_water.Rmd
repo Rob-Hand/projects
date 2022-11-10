@@ -1,0 +1,253 @@
+---
+title: "Comparison of World Country Clusters by HDI and Gender Equality and by Water Resources and Agriculture"
+author: "Robert Hand and Rachel Jordan"
+date: "May 2022"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(knitr)
+library(tidyverse)
+library(mice)
+library(sf)
+library(gridExtra)
+library(ggh4x)
+library(gt)
+library(cluster)
+library(factoextra)
+library(ggbiplot)
+```
+
+
+Data Cleanup
+```{r fig.out.width="150%"}
+#data
+data <- read.csv("water.csv", header = TRUE)
+
+#rename the variables
+colnames(data) <- c("country","year","country_area","arable_land","crop_area","pct_area_cultivated","total_pop","rural_pop","urban_pop","pop_density","gdp","gdp_per_capita","ag_value_added_pct_gdp","ag_value_added_gdp","industry_value_added_gdp","services_value_added_gdp","hdi","gii","pct_gva_from_irrigated_ag","total_int_renewable_water_per_capita","surface_water_leaving_country","water_withdrawal_per_capita","pct_access_safe_drinking_water")
+
+#Arable land/country_area*100 = percent arable land 
+data <- data %>% mutate(pct_arable_land = (arable_land/country_area)*100)
+
+
+#pct_crop_area
+data <- data %>% mutate(pct_crop_area = (crop_area/country_area)*100)
+
+#new data set of variables for water and agriculture clustering. 
+data_cluster <- data %>% select(pct_arable_land,pct_crop_area,pct_area_cultivated,ag_value_added_pct_gdp,pct_gva_from_irrigated_ag,total_int_renewable_water_per_capita,surface_water_leaving_country,pct_access_safe_drinking_water,water_withdrawal_per_capita)
+```
+
+
+Imputation of Missing Data
+```{r fig.out.width="150%"}
+#multiple imputation of missing values using mice package 
+data_cluster <- mice(data_cluster,m=10, seed = 50) #a big list of not useful output.
+data_cluster <- complete(data_cluster,1)
+```
+
+
+Clustering
+```{r fig.out.width="150%"}
+#scaling the data. 
+data_cluster<- scale(data_cluster,
+center = FALSE, scale = TRUE)
+
+
+#elbow plot to aid in deciding how many centers
+wss <- sapply(1:10, 
+              function(k){kmeans(dist(data_cluster, method = "euclidean"), k)$tot.withinss})
+data_frame(x = 1:length(wss), y = wss) %>% 
+  ggplot(aes(x, y)) +
+  geom_point() +
+  geom_line()
+
+#using 7 
+clusters <- kmeans(data_cluster, centers = 7, nstart = 20)
+
+country_clusters <- cbind(clusters$cluster,data$country)
+country_clusters <- as.data.frame(country_clusters)
+
+```
+
+
+
+Mapping the clusters
+```{r fig.out.width="150%"}
+#plot clusters. Need to rename some of the countries for the join.  
+
+colnames(country_clusters) <- c("cluster","region")
+country_clusters <- country_clusters %>% mutate(region = case_when(
+  region == "United States of America"~"USA",
+  region == "Russian Federation"~"Russia",
+  region == "Venezuela (Bolivarian Republic of)"~"Venezuela",
+  region == "Bolivia (Plurinational State of)"~"Bolivia",
+  region == "Czechia"~"Czech Republic",
+  region == "Iran (Islamic Republic of)"~"Iran",
+  region == "Antigua and Barbuda"~"Antigua",
+  region == "Brunei Darussalam"~"Brunei",
+  region == "Cabo Verde"~"Cape Verde",
+  region == "Congo"~"Democratic Republic of the Congo",
+  region == "CÃ´te d'Ivoire"~"Ivory Coast",
+  region == "Democratic People's Republic of Korea"~"North Korea",
+  region == "Eswatini"~"Swaziland",
+  region == "Grenade"~"Grenada",
+  region == "Holy See"~"Vatican",
+  region == "Lao People's Democratic Republic"~"Laos",
+  region == "Micronesia (Federated States of)"~"Micronesia",
+  region == "Republic of Korea"~"South Korea",
+  region == "Republic of Moldova"~"Moldova",
+  region == "Saint Kitts and Nevis"~"st Kitts",
+  region == "Saint Vincent and the Grenadines"~"Saint Vincent",
+  region == "Syrian Arab Republic"~"Syria",
+  region == "Trinidad and Tobago"~"Trinidad",
+  region == "United Kingdom"~"UK",
+  region == "United Republic of Tanzania"~"Tanzania",
+  region == "Viet Nam"~"Vietnam",
+  TRUE ~region
+))
+
+
+#create a map of the clusters. 
+map_data <- map_data("world")
+map_data1 <- left_join(map_data,country_clusters, by="region")
+map_data1 <- map_data1 %>% filter(!is.na(map_data1$cluster))
+map_water <- ggplot(map_data1,aes(x=long, y=lat, group=group)) + geom_polygon(aes(fill=cluster), color = "black") + scale_fill_viridis_d() + ggtitle("Water and Agriculture Clusters")
+
+map_water
+
+#it's also helpful visually to see each cluster in isolation. 
+x <- c(NA,NA,NA,NA,NA,NA,NA)
+
+for (i in 1:7) {
+x[i] <- "red"
+x[-i] <- "blue"
+print(ggplot(map_data1,aes(x=long, y=lat, group=group)) + geom_polygon(aes(fill=cluster), color = "black") + scale_fill_manual(values = x) + ggtitle(paste("Water and Agriculture Cluster",i, sep = " ")))
+}
+
+
+#View each cluster by country name. 
+countries <- lapply(split(country_clusters$region, country_clusters$cluster), sort)
+maxl <- max(sapply(countries, length)) 
+res <- sapply(countries, function(x) c(x, rep(NA, maxl - length(x))))
+maxl <- max(sapply(countries, length)) 
+country_names <- sapply(countries, function(x) c(x, rep(NA, maxl - length(x))))
+country_names <- as.data.frame(res)
+country_names %>% gt() %>% fmt_missing(columns = 1:7,missing_text = "") 
+
+#silhouette plot. 
+sil <- silhouette(clusters$cluster, dist(data_cluster))
+fviz_silhouette(sil)
+
+#do the prcomp mapping for first two principal components. 
+pca <- prcomp(data_cluster, scale. = TRUE)
+pca_scores <- prcomp(data_cluster, scale. = TRUE)$x[,1:2]
+pca_scores <- as.data.frame(cbind(pca_scores,country_clusters$cluster))
+pca_scores <- pca_scores %>% mutate(PC1 = as.numeric(PC1))
+pca_scores <- pca_scores %>% mutate(PC2 = as.numeric(PC2))
+pca_scores %>% ggplot(aes(x=as.numeric(PC1), y=as.numeric(PC2), group=V3)) + geom_point(aes(shape=V3,col=V3)) + scale_shape_manual(values=c(1,2,3,4,5,6,7))
+
+
+#ggbiplot also helps visualize this better. 
+ggbiplot(pca, groups = country_clusters$cluster, labels=country_clusters$region, ellipse = TRUE, ellipse.prob = .95)
+
+
+#look at how these align with clustering off some other variables of human development index and gender inequality index. 
+other_variables <- data %>%
+  select(hdi,gii)
+
+
+#cluster on other variables. imputation, selection of centers, clustering. 
+other_imputation <- mice(other_variables)
+other_imputed <- complete(other_imputation,1)
+other_imputed_scaled <- scale(other_imputed,center=F)
+wss2 <- sapply(1:10,
+              function(k){kmeans(other_imputed_scaled, k)$tot.withinss})
+data_frame(x = 1:length(wss2), y = wss2) %>%
+  ggplot(aes(x, y)) +
+  geom_point() +
+  geom_line()
+
+other_kmeans_k4 <- kmeans(other_imputed_scaled, centers =7 , nstart = 20)
+
+other <- as.data.frame(cbind(other_kmeans_k4$cluster,data$country))
+
+
+#to plot on map, need to rename some of the countries for the join. 
+
+colnames(other) <- c("cluster","region")
+other <- other %>% mutate(region = case_when(
+  region == "United States of America"~"USA",
+  region == "Russian Federation"~"Russia",
+  region == "Venezuela (Bolivarian Republic of)"~"Venezuela",
+  region == "Bolivia (Plurinational State of)"~"Bolivia",
+  region == "Czechia"~"Czech Republic",
+  region == "Iran (Islamic Republic of)"~"Iran",
+  region == "Antigua and Barbuda"~"Antigua",
+  region == "Brunei Darussalam"~"Brunei",
+  region == "Cabo Verde"~"Cape Verde",
+  region == "Congo"~"Democratic Republic of the Congo",
+  region == "CÃ´te d'Ivoire"~"Ivory Coast",
+  region == "Democratic People's Republic of Korea"~"North Korea",
+  region == "Eswatini"~"Swaziland",
+  region == "Grenade"~"Grenada",
+  region == "Holy See"~"Vatican",
+  region == "Lao People's Democratic Republic"~"Laos",
+  region == "Micronesia (Federated States of)"~"Micronesia",
+  region == "Republic of Korea"~"South Korea",
+  region == "Republic of Moldova"~"Moldova",
+  region == "Saint Kitts and Nevis"~"st Kitts",
+  region == "Saint Vincent and the Grenadines"~"Saint Vincent",
+  region == "Syrian Arab Republic"~"Syria",
+  region == "Trinidad and Tobago"~"Trinidad",
+  region == "United Kingdom"~"UK",
+  region == "United Republic of Tanzania"~"Tanzania",
+  region == "Viet Nam"~"Vietnam",
+  TRUE ~region
+))
+
+
+#create a map of the clusters. 
+map_data2 <- left_join(map_data,other, by="region")
+map_data2 <- map_data2 %>% filter(!is.na(map_data2$cluster))
+map_other <- ggplot(map_data2,aes(x=long, y=lat, group=group)) + geom_polygon(aes(fill=cluster), color = "black") + scale_fill_viridis_d() + ggtitle("Human Development and Gender Inequality Indices Clusters")
+  
+map_other
+
+#look at the two maps side by side. 
+grid.arrange(map_water,map_other,nrow=2)
+
+
+y <- c(NA,NA,NA,NA,NA,NA,NA)
+#messing around with the mapping visualizations. Interested if we can show each of the clusters compared to all the other ones if this would help with vis. for loop?
+
+for (i in 1:7) {
+y[i] <- "purple"
+y[-i] <- "green"
+print(ggplot(map_data2,aes(x=long, y=lat, group=group)) + geom_polygon(aes(fill=cluster), color = "black") + scale_fill_manual(values = y) + ggtitle(paste("Human Development and Gender Inequality Indices Cluster", i, sep = " ")))
+}
+
+#look at these clusters by name. 
+names <- lapply(split(other$region, other$cluster), sort)
+maxl <- max(sapply(names, length)) 
+res <- sapply(names, function(x) c(x, rep(NA, maxl - length(x))))
+maxl <- max(sapply(names, length)) 
+names_index <- sapply(names, function(x) c(x, rep(NA, maxl - length(x))))
+names_index <- as.data.frame(res)
+names_index %>% gt() %>% fmt_missing(columns = 1:7,missing_text = "") 
+
+#silhouette plot. 
+sil <- silhouette(other_kmeans_k4$cluster, dist(other_imputed_scaled))
+fviz_silhouette(sil)
+
+
+```
+
+
+
+
+
