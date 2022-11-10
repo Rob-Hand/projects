@@ -9,16 +9,20 @@ output:
 header-includes: \usepackage{setspace}\doublespacing
 ---
 
-OVERVIEW. 
+DATA AND PACKAGES
 
 --------------
-Find needed data and shape file here: Download csv from first link, download "shapefile" under "export" at second link. 
+Find needed data and shape file here: Download csv from first link, download "shapefile" zipe file under "export" at second link. 
 
 https://data.cityofchicago.org/Health-Human-Services/Public-Health-Statistics-Selected-public-health-in/iqnk-2tcu
 
 https://data.cityofchicago.org/Facilities-Geographic-Boundaries/Boundaries-Community-Areas-current-/cauq-8yn6
 
-READ DATA LOADING STEP FOR DATA LOADING GUIDE. 
+READ DATA LOADING STEP FOR DATA LOADING INFORMATION.  
+
+NEED TO HAVE FOLLOWING PACKAGES INSTALLED: tidyverse, ggbiplot, sf, corrplot, knitr, gt. 
+
+OVERVIEW OF ANALYSIS
 
 ------------------
 
@@ -54,14 +58,19 @@ library(gt)
 ```
 
 
-Data Loading. Need the selected public health indicates by community area data file from the city of Chicago data portal and the shape file for the 77 official Chicago community areas, also easily publicly available. 
+DATA LOADING Need the selected public health indicates by community area data file from the city of Chicago data portal and the shape file for the 77 official Chicago community areas from the links at the top of this file. 
 
 ```{r}
 
 data <- read.csv('Public_Health_Statistics_-_Selected_public_health_indicators_by_Chicago_community_area_-_Historical.csv', header = TRUE, stringsAsFactors = FALSE) #add your filepath or be sure to set directory to file location. 
 
-#insert actual filepath to the location of the shapefile where it says "insert filepath here". 
-map <- st_read("insert filepath here/geo_export_cceb8ce1-c228-4e57-a01b-9cea710b9da7.shp")
+#insert actual full fil epath to the location of the shapefile where it says file path. 
+#The way I did this is 
+#1. extracting all the files from the zipped download file
+#2. insert the file path to the one that is a ".shp"
+# make sure to "extract all" files from the zip file to and insert the file that is ".shp" in to the st_read function. 
+
+map <- st_read("filepath")
 
 
 ```
