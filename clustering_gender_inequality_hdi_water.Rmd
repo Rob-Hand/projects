@@ -223,7 +223,7 @@ grid.arrange(map_water,map_other,nrow=2)
 
 
 y <- c(NA,NA,NA,NA,NA,NA,NA)
-#messing around with the mapping visualizations. Interested if we can show each of the clusters compared to all the other ones if this would help with vis. for loop?
+#Interested if we can show each of the clusters compared to all the other ones if this would help with vis. 
 
 for (i in 1:7) {
 y[i] <- "purple"
