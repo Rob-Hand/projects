@@ -1,0 +1,179 @@
+---
+title: "titanic_lasso_kfold"
+author: "Robert Hand"
+date: '2022-11-10'
+output: html_document
+---
+
+DATA
+---------------------------------------------------------
+Get data and read context here:
+https://www.kaggle.com/competitions/spaceship-titanic/data
+
+---------------------------------------------------------
+
+In file I write a function to do a lasso on a titanic spaceshipo input data with k-fold cv for 5 folds, choosing lambda by cross validation within each fold. Then I apply the function to all five of the imputed datasets. Then, using the sample proportion of transported as a threshold I assign each of these to a class of transported or not for each of the five groups. Then assign the final predicted class by majority vote: whichever class more of the five assigned that observation to. 
+
+Before fitting the lasso I used the mice package to perform multiple imputation on the missing values in the data, and separate some variables into multiple vars.  
+I was just interested in how well this method would work. It resulted in a prediction accuracy of 79.2 percent. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(epitools)
+library(mice)
+library(VIM)
+library(glmnet)
+
+```
+
+
+Reading Data
+```{r cars}
+train <- read.csv("train.csv", header = T)
+test <- read.csv("test.csv",header = T)
+```
+
+
+Splitting Cabin variable into three vars: deck, cabin number, and side of spaceship. And setting blanks to NA. 
+```{r cars}
+train %>% select(Cabin) %>% group_by(Cabin) %>% count()
+
+train <- separate(train, Cabin, c("deck","num","side"), sep = "/", remove = FALSE)
+train %>% select(deck) %>% group_by(deck) %>% count()
+train %>% select(num) %>% group_by(num) %>% count()
+train %>% select(side) %>% group_by(side) %>% count()
+
+test <- separate(test, Cabin, c("deck","num","side"), sep = "/", remove = FALSE)
+
+table(train$Transported,train$side)
+#it appears the side of port or starboard has little.
+
+table(train$Transported,train$deck)
+#it seems some of the decks may have disproportionate numbers of passengers dying. 
+
+train[train==""] <- NA
+
+#checking levels of some variables
+train %>% select(CryoSleep) %>% group_by(CryoSleep) %>% count()
+train %>% select(HomePlanet) %>% group_by(HomePlanet) %>% count()
+train %>% select(Cabin) %>% group_by(Cabin) %>% count()
+train %>% select(VIP) %>% group_by(VIP) %>% count()
+train %>% select(Destination) %>% group_by(Destination) %>% count()
+train %>% select(deck) %>% group_by(deck) %>% count()
+train %>% select(num) %>% group_by(num) %>% count()
+
+
+```
+
+
+MISSING DATA:
+WHICH VARIABLES HAVE MISSING DATA?
+There is missing data for all variables except for passengerId. 
+```{r}
+train_miss <- train[rowSums(is.na(train)) > 0,]
+test_miss <- test[rowSums(is.na(test)) > 0,]
+
+```
+
+
+Multiple Imputation using the Mice package. 
+```{r}
+pMiss <- function(x){sum(is.na(x))/length(x)*100}
+apply(train,2,pMiss)
+
+#so about 2 to 3 percent of the data is missing for each of the variables. 
+
+#visualize missing patterns. 
+md.pattern(train[1:1000,],rotate.names = T)
+
+barMiss(train[1:100,])
+
+
+aggr_plot <- aggr(train, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(train), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+cols <- c("PassengerId","HomePlanet", "CryoSleep", "deck", "side","Destination","Age","VIP","Transported")
+
+#correct some var types. 
+train[cols] <- lapply(train[cols], factor)
+
+train$num <- as.numeric(train$num)
+train$Age <- as.numeric(train$Age)
+
+
+#imputing the data. Not using the original cabin variable but the broken down categories of duck, num and side. 
+
+#dropping passenger names
+train <- subset(train,select = c(-Cabin,-PassengerId))
+train <- subset(train,select = c(-Name))
+
+train_imp <- mice(train,m=5,maxit=10,seed=500)
+summary(train_imp)
+
+#visualize comparison of imputed data vs nonimputed data. 
+densityplot(train_imp)
+
+stripplot(train_imp)
+
+#save the imputed datasets. 
+imp_data1 <- complete(train_imp,1)
+imp_data2 <- complete(train_imp,2)
+imp_data3 <- complete(train_imp,3)
+imp_data4 <- complete(train_imp,4)
+imp_data5 <- complete(train_imp,5)
+
+apply(imp_data1,2,pMiss)
+
+```
+
+
+LASSO and cross validation. 
+```{r}
+lasso <- function(input){
+data <- data.frame(input)
+set.seed(124)
+x <- model.matrix(Transported ~., data)[,]
+y <- data$Transported
+
+k <- 5
+fold <- sample(1:k,nrow(data),replace = TRUE)
+
+for (i in 1:k){
+mod.cv <- cv.glmnet(x[fold!=i,], y[fold!=i],alpha=1,family="binomial")
+ lasso_model <- glmnet(x[fold!=i,],y[fold!=i],lambda=mod.cv$lambda.min,alpha = 1,family = "binomial")
+ data$pred_prob[fold==i] <- predict.glmnet(lasso_model,newx=x[fold==i,],type = "response")
+}
+
+prop_survive <- 4315/(4378+4315)
+probs <- exp(data$pred_prob)/(1+exp(data$pred_prob))
+predicted_classes <- ifelse(probs>prop_survive,"True","False")
+accuracy <- sum(predicted_classes==data$Transported)/length(data$Transported)
+probs
+}
+
+train %>% select(Transported) %>% group_by(Transported) %>% tally()
+list <- list(imp_data1,imp_data2,imp_data3,imp_data4,imp_data5)
+pr <- lapply(list,lasso)
+pr <- data.frame(pr)
+colnames(pr) <- c("one","two","three","four","five")
+#pr$avg <- apply(pr,1,mean)
+
+classes <- data.frame(matrix(NA,nrow=8693,ncol=5))
+for (i in 1:5){
+classes[,i] <- ifelse(pr[,i]>prop_survive,1,0)
+}
+
+classes_majority <- apply(classes,1,sum)
+classes_majority <- data.frame(classes_majority)
+classes_majority <- classes_majority %>% mutate(survive=case_when(classes_majority>2~"True",TRUE~"False"))
+
+#classification table
+table(classes_majority$survive,train$Transported)
+
+(3316+3568)/(3316+3568+999+810)
+
+#79.19 percent accuracy by this method. 
+
+```
+
+
