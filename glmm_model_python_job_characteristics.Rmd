@@ -1,0 +1,421 @@
+---
+title: 'The Relationship Between Job Characteristics and the Probability of Requesting Python Skills'
+author: "Robert Hand"
+date: '2022'
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+Executive Summary
+
+How do different attributes of a job in the data science and statistics space relate to the probablity that the job will want or require Python skills?
+
+There is a dataset available (https://www.kaggle.com/datasets/rashikrahmanpritom/data-science-job-posting-on-glassdoor) which was collected from about 600 Glassdoor job postings for positions in data science, analytics, data engineering, statistics and similar roles. The data set provides information about the job, the company, and which software or programming languages are requested from a candidate. I was interested in modeling the relationship between whether a job would want a candidate to know Python and other job characteristics such as salary, industry, other skills, etc. 
+
+The model was a GLMM, a logistic regression mixed effect model, with the job title groups modeled as a random effect and other included predictors modeled as fixed effects. This was done because this model had similar performance but very slightly better to the fixed effects model alone with the same covariates in terms of predictive accuracy, a likelihood ratio test supported the random effect inclusion, and because EDA showed that it was a reasonable choice to model the job titles found in the data as a random effect. 
+
+MODEL: Logit(p(Python=1)) ~ (1 | job_title category) -5.0 + 0.92(Glassdoor_Company_Rating) + 0.0059(Salary) + 1.1(sql=requested) + 0.73(tableau=requested +  1.95(spark=requested)
+
+Random Effect Modeled as N(0, Tau^2=1.6). observed jobs falling into 7 job titles
+
+All predictors in the model are significant at least at alpha = 0.05 expect for salary, which had a p-value of 0.13, however, it was kept since it still seemed to contribute to the model and since it was selected via best subsets selection, the fixed efffect only model, and since it is practically speaking an important covariate. 
+
+The model had a 76% with fairly balanced sensitivity and specificity.  
+
+KEY FINDINGS:
+Conditional on a particular job title grouping, jobs with higher salaries and better company ratings are more likely to desire Python skills.
+
+If a job desires SQL, Tableau, or Spark skills, the odds of Python also increase considerably. 
+
+Overall, hopefully the takeaways from this model can aid in a better understanding of how requested programming skills relate to job attributes for someone in an early to mid career stage in this space. 
+
+FUTURE DIRECTIONS:
+- Including R programming in the model somehow. Not in original dataset.
+
+- I was interested in explored a mixed effect model here and understanding the relationships more than classification per se. Other modeling and classification methods would be interesting to apply on this same data set, such as SVM, Random Forests, or KNN classification. An elastic not could also be applied.  
+
+-Using k-fold cross validation for a more predictive approach to the problem. 
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyverse)
+library(stringr)
+library(gridExtra)
+library(lme4)
+library(leaps)
+library(bestglm)
+library(gee)
+library(pROC)
+library(corrplot)
+library(gt)
+library(flextable)
+library(knitr)
+library(locfit)
+```
+
+
+Initial exploration, reconstruction, and which variables to include. 
+```{r}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 15, fig.height = 15)
+
+#read data set
+df <- read.csv('data_scientist_salary_data.csv', header = TRUE, stringsAsFactors = FALSE)
+
+
+#do we care about keeping all the smaller sectors in this analysis? 
+df %>% select(Sector) %>% group_by(Sector) %>% count() %>% arrange(desc(n)) %>% kable()
+
+df %>% select(Sector) %>% group_by(Sector) %>% count() %>% arrange(desc(n)) %>% ggplot(aes(x=reorder(Sector,-n),y=n)) + geom_bar(stat = "identity",fill="steel blue") + ggtitle("Jobs by Sector") + xlab("Sector") + theme(axis.text.x=element_text(angle=90,hjust=1,vjust=1,size=8))
+
+#what industries are included in some of these? Industry is nested within sector.
+df %>% select(Sector, Industry) %>% filter(Sector =="Manufacturing") %>% group_by(Industry) %>% count() %>% kable()
+df %>% select(Sector, Industry) %>% filter(Sector =="Aerospace & Defense") %>% group_by(Industry) %>% count() %>% kable()
+df %>% select(Sector, Industry) %>% filter(Sector =="Business Services") %>% group_by(Industry) %>% count() %>% kable()
+df %>% select(Sector, Industry) %>% filter(Sector =="Transportation & Logistics") %>% group_by(Industry) %>% count() %>% kable()
+df %>% select(Sector, Industry) %>% filter(Sector =="Oil, Gas, Energy & Utilities") %>% group_by(Industry) %>% count() %>% kable()
+
+```
+
+Based on these, going to create a new grouping "manufacturing and industrial production and add transportation and logistics to the business services category. Drop the remaining sectors that do not have many entries to focus on larger ones.
+
+
+```{r}
+df <- df %>% mutate(Sector = case_when(
+  Sector %in% c("Transportation & Logistics")~"Business Services",
+  Sector %in% c("Aerospace & Defense","Construction, Repair & Maintenance","Oil, Gas, Energy & Utilities","Mining & Metals","Agriculture & Forestry","Manufacturing")~"Manufacturing & Industrial Production",
+  TRUE ~Sector
+))
+
+#remove the ones we don't need
+df <- df[df$Sector %in% c("Biotech & Pharmaceuticals","Information Technology","Business Services","Insurance","Health Care","Finance", "Manufacturing & Industrial Production") ,]
+```
+
+
+```{r}
+#check the balance of Python response variable: 
+df %>% select(Python) %>% count(Python) %>% kable()
+#basically an even split of yes and no. 
+
+#Job titles. Dropping the directors and project managers so it is standardized, not comparing managerial and director positions to non-managerial/director positions. 
+df %>% select(job_title_sim) %>% count(job_title_sim) %>% kable()
+df <- df[!df$job_title_sim %in% c("director", "Data scientist project manager","na"),]
+```
+
+
+Restructuring salary so average of the upper and lower end of the salary estimate given, and converting the hourly wages to annual salary estimates. 
+
+```{r}
+df %>%  select(Salary.Estimate) %>% count(Salary.Estimate) %>% head() %>% kable()
+# Many more of these. Salary is given as a range salary estimate, in categories. I think it makes more sense as a continuous variable, so transforming to continuous by taking average of the range and
+#changing to numeric. 
+
+#which ones are in hourly terms?
+df %>% select(Salary.Estimate) %>% filter(str_detect(Salary.Estimate,"Hour")==TRUE) %>% kable()
+
+#make a copy
+df <- df %>% mutate(Salary.Estimate2 = Salary.Estimate)
+
+#convert to a number that is average of the upper and lower ends of the salary estimate. 
+df$Salary.Estimate <- gsub("[^0-9-]", "", as.character(df$Salary.Estimate))
+df <- separate(df, Salary.Estimate, c("lower","upper"), sep = "-", remove = FALSE)
+df <- df %>% mutate(salary = (as.numeric(lower) + as.numeric(upper))/2)
+
+#change hourly to annual salary. Base on assumption of 40 hr work week, 52 weeks in year, and divide by 1000 to standardize with other salaries. 
+df <- df %>% mutate(salary = case_when(
+  str_detect(Salary.Estimate2,"Hour")==TRUE~salary*(40*52/1000),
+  TRUE ~ salary
+))
+#check 
+df %>% select(Salary.Estimate2,salary) %>% filter(str_detect(Salary.Estimate2,"Hour")==TRUE) %>% kable()
+```
+
+
+Other Variables. 
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 15, fig.height = 15)
+#Rating
+df %>% select(Rating) %>% count(Rating) %>% kable()
+df <- df[!df$Rating==-1,]
+hist(df$Rating,col = "blue",main = "Histogram of Glassdoor Rating of Company",xlab = "Rating (0 to 5 scale)")  #fairly normal distribution
+
+df %>% select(Size) %>% count(Size) %>% kable()
+#drop the 2 unknowns
+df <- df[!df$Size=='unknown',]
+ 
+#founded
+df %>% select(Founded) %>% count(Founded) %>% head() %>% kable()
+#remove the -1s. 
+df <- df[!df$Founded==-1,]
+```
+
+
+Transforming the sate location into four census bureau geographic regions. 
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 15, fig.height = 15)
+locations <- df %>% select(Job.Location) %>% count(Job.Location)
+ggplot(locations, aes(x=reorder(Job.Location,-n), y=n)) + geom_bar(stat = "identity", fill = "red") + ggtitle("Job Locations by State Count") + labs(x="State",y="Count") + theme(axis.text=element_text(size=15),
+axis.title=element_text(size=15,face="bold")) + theme(plot.title = element_text(size = 20, face = "bold"))+ theme(axis.text.x=element_text(angle=90,hjust=1,vjust=1, size=10)) 
+
+#transform to regions based on four Census Bureau regions. 
+df <- df %>% mutate(
+  region = case_when(
+    df$Job.Location %in% c("WA","OR","CA","NV","AZ","UT","CO","NM","WY","MT","ID")~"West",
+    df$Job.Location %in% c("ND","MN","SD","NE","KS","MO","IA","IL","IN","OH","WI","MI")~"Midwest",
+    df$Job.Location %in% c("ME","VT","NH","MA","CT","NY","NJ","PA")~"Northeast",
+    TRUE ~"South"
+  )
+)
+
+df %>% select(region) %>% group_by(region) %>% count() %>% ggplot(aes(y=n, x=region)) + geom_bar(stat="identity", fill="blue") + ggtitle("Jobs by Region") + xlab("Region") + ylab("Job Count") + geom_text(aes(label=n), vjust=1.2, color="white", size = 10) + theme(axis.text=element_text(size=15),
+axis.title=element_text(size=15,face="bold")) + theme(plot.title = element_text(size = 20, face = "bold"))
+```
+
+
+Drop jobs requiring a phd, since aim of this is for an audience with a master's/bachelor's degree. 
+
+```{r}
+df %>% select(Degree) %>% group_by(Degree) %>% count() %>% kable()
+df <- df[!df$Degree=="P",]
+```
+
+Look at how many jobs requested other skills listed as binary variables besides Python. 
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 15, fig.height = 15)
+#look at how many jobs requested other skills listed as binary variables. 
+counts_want_skill <- apply(df[,26:41], 2, sum)
+counts_want_skill<-as.data.frame(as.table(counts_want_skill), stringsAsFactors = FALSE)
+counts_want_skill <- counts_want_skill[order(counts_want_skill$Freq, decreasing = TRUE),]
+ggplot(counts_want_skill, aes(x=reorder(Var1,-Freq), y=Freq)) + geom_bar(stat = "identity", fill = "blue") + xlab("Skill") + ylab("Jobs Requesting Skill (out of 504)") + ggtitle("Desired Software Skills") +theme(axis.text.x=element_text(angle=90,hjust=1,vjust=1, size = 10)) + theme(axis.text=element_text(size=15),
+axis.title=element_text(size=12,face="bold")) + theme(plot.title = element_text(size = 20, face = "bold"))
+
+
+```
+
+
+Based on this, I want to look at the larger ones, SQL, Tableau, aws, spark, hadoop, and sas. also are going to look at salary, region, sector, job rating, how new the company is (founded), and job title. 
+
+
+Last variables to check. 
+```{r}
+df %>% select(Type.of.ownership) %>% group_by(Type.of.ownership) %>% count() %>% kable()
+#company ownership groups are sort of mixed and unclear, so not going to look at it. 
+df %>% select(Employer.provided) %>% group_by(Employer.provided) %>% count() %>% kable()
+#this variable seems plainly wrong. It doesn't seems like only five of these jobs would have employer provided insurance. In either case, the imbalance means it wouldn't offer
+#much insight for the model.
+```
+
+based on this, I want to look at the larger ones, SQL, Tableau, aws, spark, hadoop, and sas. also are going to look at salary, region, sector, job rating, and job title. 
+
+Not looking at the software skills with low counts, other variables such as upper, lower salary are captured by salary, company text, headquarters, and job description are uniquely specific text strings that don't fit this analysis. Since this is geared towards things that could be helpful to someone applying to jobs in this field, and for simplicity, also leaving out size and revenue of the company.
+
+
+```{r}
+#so going to look at:
+df2 <- df %>% select(Python,sql,sas,tableau,salary,aws,spark,Sector,region,Rating,job_title_sim,excel,hadoop)
+```
+
+
+Check out sector, region, and job title for potential clustering and random effect inclusion:
+```{r cluster}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 10, fig.height = 10)
+
+regions_sector <- df %>% select(Sector,region) %>% group_by(Sector,region) %>% count() %>% arrange(-desc(Sector),desc(n))
+
+regions_sector %>% select(Sector,region,n) %>% ggplot(aes(fill=Sector, y=n, x="")) + geom_bar(stat = "identity", width = 1, position = position_fill()) + coord_polar(theta = "y", start = 0) + facet_wrap(~region) + theme(axis.text=element_text(size=10),
+axis.title=element_text(size=15,face="bold")) + theme(plot.title = element_text(size = 20, face = "bold"))
+
+#or viewed the other way. 
+regions_sector %>% select(Sector,region,n) %>% ggplot(aes(fill=region, y=n, x="")) + geom_bar(stat = "identity", width = 1, position = position_fill()) + coord_polar(theta = "y", start = 0) + facet_wrap(~Sector) + theme(axis.text=element_text(size=10),
+axis.title=element_text(size=15,face="bold")) + theme(plot.title = element_text(size = 20, face = "bold"))
+
+```
+Certainly some potential groupings there. 
+
+Looking at job title grouping counts and by sector. 
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 15, fig.height = 15)
+#title
+title_by_sector <- df2 %>% select(Sector,job_title_sim) %>% group_by(Sector,job_title_sim) %>% count()  
+
+title_by_sector %>% ggplot(aes(fill=Sector, y=n, x="")) + geom_bar(stat = "identity", width = 1, position = position_fill()) + coord_polar(theta = "y", start = 0) + facet_wrap(~job_title_sim) + theme(axis.text=element_text(size=10),
+axis.title=element_text(size=15,face="bold")) + theme(plot.title = element_text(size = 20, face = "bold"))
+
+
+```
+
+Also check for correlations between our potential predictors
+```{r}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 10, fig.height = 10)
+cors <- cor(df2[,c(2:6,10,12:13)])
+corrplot(cors,method = "number")
+#small correlations all around. 
+```
+
+So region, sector, and job title could all be seen potential as random effects. Going to test them out. Testing Models
+
+Not a "predictive" problem as much as trying to understand the relationships between the variables, but going to create a hold out set to test the accuracy of the fitted model on. 
+```{r}
+set.seed(25)
+train <- sample(nrow(df2),nrow(df2)*.9,replace = TRUE)
+train_data <- df2[train,]
+test <- df2[-train,]
+test_labels <- test$Python
+```
+
+
+```{r fit}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 10, fig.height = 10)
+
+#RANDOM EFFECTS OF SECTOR AND REGION. 
+fit1_hier <- glmer(Python ~ (1|Sector) + (1|region) + sql + sas + tableau + aws + spark + Rating + job_title_sim + salary, family = binomial, data = train_data)
+summary(fit1_hier)
+#basically zero variance, seems inappropriate to use them as random effect. 
+
+#try with only one random effect term, sector
+fit2_sector <- glmer(Python ~ (1|Sector) + sql + sas + tableau + aws + spark + Rating + job_title_sim + region + salary, family = binomial, data = train_data)
+summary(fit2_sector)
+#basically still zero. 
+
+#with region as the one random effect
+fit3_region <- glmer(Python ~ (1|region) + sql + sas + tableau + aws + spark + Rating + job_title_sim + Sector + salary, family = binomial, data = train_data)
+summary(fit3_region)
+#again virtually zero.  
+
+#random effect on job title?
+fit4_title <- glmer(Python ~ (1|job_title_sim) + sql + sas + tableau + aws + spark + Rating + Sector + region + salary, family = binomial, data = train_data)
+summary(fit4_title)
+#okay we see an actual effect. so let's pull some non-significant variables. dropping sector.
+
+ 
+fit_title3 <- glmer(Python ~ (1|job_title_sim) + sql + sas + tableau + aws + spark  + Rating + region + salary,family = binomial, data = train_data)
+summary(fit_title3)
+
+#drop sas p value of .9. 
+fit_title4 <- glmer(Python ~ (1|job_title_sim) + sql + tableau + spark + aws + Rating + region + salary, family = binomial, data = train_data)
+summary(fit_title4)
+
+#only one region is significant, and only at the 0.1 level. But, maybe trying modeling this as a random effect as well first before dropping. 
+fit5 <- glmer(Python ~ (1|job_title_sim) + (1|region) + Rating + aws + salary + sql + tableau + spark , family = binomial, data = train_data)
+summary(fit5)
+#very small variance. Probably not worth it. remove. 
+
+fit6 <- glmer(Python ~ (1|job_title_sim) + Rating + salary + sql + tableau + spark + aws , family = binomial, data = train_data)
+summary(fit6)
+#remove aws
+
+fit6 <- glmer(Python ~ (1|job_title_sim) + Rating + salary + sql + tableau + spark, family = binomial, data = train_data)
+summary(fit6)
+
+#FITTING THE GLM MODEL VIA BACKWARDS ELIMINATION/PURPOSEFUL SELECTION. Only fixed effects. Did not show output of every step just for brevity. 
+fit_all <- glm(Python ~ ., family = binomial, data = train_data)
+
+fit_all_2 <- glm(Python ~ .-Sector, family = binomial, data = train_data)
+
+fit_all_3 <- glm(Python ~ .-Sector -sas, family = binomial, data = train_data)
+
+fit_all_4 <- glm(Python ~ .-Sector -sas -excel, family = binomial, data = train_data)
+
+fit_all_5 <- glm(Python ~ .-Sector -sas -excel - hadoop, family = binomial, data = train_data)
+
+fit_all_6 <- glm(Python ~ .-Sector -sas -excel - hadoop, family = binomial, data = train_data)
+
+fit_all_7 <- glm(Python ~ .-Sector -sas -excel - hadoop - aws, family = binomial, data = train_data)
+
+fit_all_8 <- glm(Python ~ .-Sector -sas -excel - hadoop - aws - region, family = binomial, data = train_data)
+summary(fit_all_8)
+
+#we get to the same model, but with some of the levels of job title being significant. 
+
+#if removed to keep only significant
+fit_all_9 <- glm(Python ~ .-Sector -sas -excel - hadoop - aws - region - job_title_sim, family = binomial, data = train_data)
+summary(fit_all_9)
+
+#compare this model to the model with sector job title as a random effect. 
+summary(fit6)
+```
+
+
+Very similar models. 
+AIC lower for the glmm indicates a better fit. Check the confusion matrix and ROC curves for performance analysis. 
+
+```{r}
+#very similar models. 
+#AIC lower for the glmm indicates a better fit. Check the confusion matrix and ROC curves. 
+prop <- sum(test$Python/nrow(test))
+
+predicted <- predict(fit_all_9,newdata = test)
+pred_probs <- expit(predicted)
+classes <- ifelse(pred_probs>prop,1,0)
+xtabs(~ test_labels + classes) %>% kable()
+as.data.frame(xtabs(~ test_labels + classes)) %>% kable()
+
+#Visualize with ROC CURVE:
+rocplot_glm <- roc(test$Python ~ classes, data = test)
+
+plot.roc(rocplot_glm, legacy.axes=TRUE)
+auc(rocplot_glm) #the accuracy, 76%. 
+
+
+#What about for the glmm?
+predicted <- predict(fit6, newdata=test)
+pred_probs <- expit(predicted)
+classes <- ifelse(pred_probs>prop,1,0)
+xtabs(~ test_labels + classes) %>% kable()
+as.data.frame(xtabs(~ test_labels + classes)) %>% kable()
+
+
+#Visualize with ROC CURVE:
+rocplot_glmm <- roc(test$Python ~ classes, data = test)
+plot.roc(rocplot_glmm, legacy.axes=TRUE)
+auc(rocplot_glmm) #the accuracy, 76%. 
+
+```
+
+How about a likelihood ratio test for the variance of the random intercept term?
+
+deviance glmm 479.7 497 df. 
+deviance of glm 533.64 df.
+
+The model terms are the same besides for the random variance term. 
+533.64-479.7
+53.94 on one degree of freedom.
+
+p-value is half the right tail probability above 53.94 on a chi-square distribution with one df. 
+
+Our likelihood ratio test test is Ho: variance = 0 vs. Ha: variance > 0. Our p-value is half the right tail probability above the difference in residual deviances for a chi-squared distribution with 1 df. (As in section 10.1.6 and 10.2.2 in the Agresti book)
+
+
+```{r}
+pchisq(53.94,1,lower.tail = FALSE)/2
+
+#supports that the model with the random intercept term is better.
+```
+
+Using the mixed effect model based on AIC, sensitivity and specificity scores and AUC, and lrt, and it seems reasonable for job title to be a random effect so, using the glmm model as the final model. 
+
+```{r}
+summary(fit6)
+```
+
+Out of curiosity and for confirmation running bestglm. 
+
+```{r}
+#out of curiosity and for confirmation check bestglm. 
+bestglm_data <- as.data.frame(cbind(as.factor(df2$sql),as.factor(df2$sas),as.factor(df2$tableau),df2$salary,as.factor(df2$aws),as.factor(df2$spark),as.factor(df2$Sector),as.factor(df2$region),df2$Rating,as.factor(df2$job_title_sim),as.factor(df2$excel),as.factor(df2$hadoop),df2$Python))
+a <- bestglm(bestglm_data, family = binomial)
+#variable order: sql, tableau, salary, spark, rating. Best glm gives the same five significant fixed effects with nearly identical beta values. 
+a
+```
+
+
+
+
+
+
+
+
