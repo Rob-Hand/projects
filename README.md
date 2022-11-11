@@ -2,6 +2,8 @@
 Hi! I have uploaded a couple projects here that I've worked on over the past year. Some of them are currently ongoing. Please feel free to look around, 
 I hope you find them interesting. 
 
+You can find rmarkdown files, data used or links to the data, and also some PDF files of rmarkdown output if you are interested in checking those out themselves. 
+
 Here is a brief description of each:
 
 GLMM Python Job Characteristics: I used a kaggle dataset of Glassdoor postings for data science - esque jobs to build visualize and build 
