@@ -1,0 +1,478 @@
+---
+title: "project_predictive"
+author: "Robert Hand"
+date: "11/1/2022"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(epitools)
+library(mice)
+library(VIM)
+library(glmnet)
+library(e1071)
+library(gbm)
+library(BART)
+library(randomForest)
+```
+
+
+Reading Train Data
+```{r}
+train <- read.csv("train.csv", header = T)
+head(train)
+```
+
+
+Splitting the "Cabin" Variable into three variables: 
+Deck, cabin number, and side, port or starboard. 
+Splitting the passengerID number into the group the 
+passenger was in and their id within the group. 
+```{r}
+train %>% select(Cabin) %>% group_by(Cabin) %>% count()
+train <- separate(train, Cabin, c("deck","num","side"), sep = "/", remove = FALSE)
+
+train <- separate(train,PassengerId, c("group","group_number"), sep = "_")
+
+```
+
+
+```{r}
+#taking a look at these new variables
+train %>% select(deck) %>% group_by(deck) %>% count()
+train %>% select(num) %>% group_by(num) %>% count()
+train %>% select(side) %>% group_by(side) %>% count()
+
+train %>% select(group_number) %>% group_by(group_number) %>% count()
+#not many passengers were travelling in large groups. 
+
+table(train$Transported,train$side)
+#it appears the side of port or starboard has basically no impact. 
+
+table(train$Transported,train$deck)
+#it seems some of the decks may have disproportionate numbers of passengers dying. 
+#Deck T has a tiny number of passengers. 
+
+#setting blanks to NA
+train[train==""] <- NA
+```
+
+
+Missing Data
+```{r}
+pMiss <- function(x){sum(is.na(x))/length(x)*100}
+apply(train,2,pMiss)
+
+#so about 2 to 3 percent of the data is missing for each of the variables. 
+
+
+aggr_plot <- aggr(train, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(train), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+#setting these variables to factors
+cols <- c("HomePlanet", "CryoSleep", "deck", "side","Destination","Age","VIP","Transported","group_number")
+
+train[cols] <- lapply(train[cols], factor)  ## as.factor() could also be used
+
+#setting these to numeric
+train$num <- as.numeric(train$num)
+train$Age <- as.numeric(train$Age)
+train$group <- as.numeric(train$group)
+
+#imputing the data. Not using the original cabin variable but the broken down categories of deck, num and side. 
+
+#dropping passenger names and the old cabin variable
+train <- subset(train,select = c(-Cabin,-Name))
+
+train_imp <- mice(train,m=3,maxit=10,seed=500)
+summary(train_imp)
+
+densityplot(train_imp)
+
+stripplot(train_imp)
+
+imp_data1 <- complete(train_imp,1)
+imp_data2 <- complete(train_imp,2)
+imp_data3 <- complete(train_imp,3)
+
+#saving one of these imputed datasets for easy access later. 
+apply(imp_data1,2,pMiss)
+write.csv(imp_data1,"imp_dat1.csv")
+
+```
+
+Reading in the saved csv file of imputed data and fixing the variables. 
+
+```{r}
+imp_data1 <- read.csv("imp_dat1.csv",header = T)
+imp_data1$Age<-as.numeric(imp_data1$Age)
+imp_data1$Transported<-as.factor(imp_data1$Transported)
+imp_data1$VIP<-as.factor(imp_data1$VIP)
+imp_data1$CryoSleep<-as.factor(imp_data1$CryoSleep)
+cols <- c("HomePlanet", "deck","side", "Destination")
+imp_data1[cols] <- lapply(imp_data1[cols], factor)
+cols2 <- c("group","group_number","num","RoomService","FoodCourt","ShoppingMall","Spa","VRDeck")
+imp_data1[cols2]<- lapply(imp_data1[cols2], as.numeric)
+imp_data1 <- subset(imp_data1, select = -c(X))
+
+```
+
+
+IMPUTING THE TEST DATA. Using the same method
+as used to imput the training data. 
+```{r}
+test_data <- read.csv("test.csv",header = T)
+pMiss <- function(x){sum(is.na(x))/length(x)*100}
+
+test_data <- separate(test_data, Cabin, c("deck","num","side"), sep = "/", remove = FALSE)
+test_data <- separate(test_data,PassengerId, c("group","group_number"), sep = "_")
+
+test_data[test_data==""] <- NA
+
+aggr_plot <- aggr(test_data, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(test_data), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+cols <- c("HomePlanet", "CryoSleep", "deck", "side","Destination","Age","VIP","group_number")
+
+
+test_data[cols] <- lapply(test_data[cols], factor)  ## as.factor() could also be used
+
+test_data$num <- as.numeric(test_data$num)
+test_data$Age <- as.numeric(test_data$Age)
+test_data$group <- as.numeric(test_data$group)
+
+
+#imputing the data. Not using the original 
+#cabin variable but the broken down categories of duck, num and side. 
+
+#dropping passenger names
+test_data <- subset(test_data,select = c(-Cabin,-Name))
+
+
+test_imp <- mice(test_data,m=3,maxit=10,seed=500)
+densityplot(test_imp)
+stripplot(test_imp)
+
+test_imp_data1 <- complete(test_imp,1)
+apply(test_imp_data1,2,pMiss)
+write.csv(test_imp_data1, "test_imp_data1.csv")
+
+```
+
+```{r}
+test_imp_data1 <- read.csv("test_imp_data1.csv")
+
+test_imp_data1[cols] <- lapply(test_imp_data1[cols], factor)
+test_imp_data1$Age<-as.numeric(test_imp_data1$Age)
+test_imp_data1$VIP<-as.factor(test_imp_data1$VIP)
+test_imp_data1$CryoSleep<-as.factor(test_imp_data1$CryoSleep)
+test_imp_data1 <- subset(test_imp_data1, select = -c(X))
+test_imp_data1[cols2]<- lapply(test_imp_data1[cols2], as.numeric)
+
+```
+
+
+
+EDA
+```{r}
+
+imp_data1 %>% select(group_number) %>% group_by(group_number) %>% count() #very few in some groups
+imp_data1 %>% select(group) %>% group_by(group) %>% count()
+imp_data1 %>% select(CryoSleep) %>% group_by(CryoSleep) %>% count()
+imp_data1 %>% select(VIP) %>% group_by(VIP) %>% count()  #very few VIP
+imp_data1 %>% select(deck) %>% group_by(deck) %>% count() #very few in deck T
+imp_data1 %>% select(num) %>% group_by(num) %>% count() #very few in deck T
+imp_data1 %>% select(side) %>% group_by(side) %>% count() #very few in deck T
+imp_data1 %>% select(Destination) %>% group_by(Destination) %>% count()
+imp_data1 %>% select(RoomService) %>% group_by(RoomService) %>% count() #most of them are zeros. 
+imp_data1 %>% select(ShoppingMall) %>% group_by(ShoppingMall) %>% count()
+imp_data1 %>% select(Spa) %>% group_by(Spa) %>% count()
+imp_data1 %>% select(VRDeck) %>% group_by(VRDeck) %>% count()
+imp_data1 %>% select(Transported) %>% group_by(Transported) %>% count()
+
+table(imp_data1$deck,imp_data1$Transported)
+
+#imp_data1 = subset(imp_data1, select = -c(group,group_number))
+#imp_data1 <- imp_data1 %>% mutate(RoomService=case_when(RoomService==0~0,TRUE~1))
+#imp_data1 <- imp_data1 %>% mutate(ShoppingMall=case_when(ShoppingMall==0~0,TRUE~1))
+#imp_data1 <- imp_data1 %>% mutate(Spa=case_when(Spa==0~0,TRUE~1))
+#imp_data1 <- imp_data1 %>% mutate(VRDeck=case_when(VRDeck==0~0,TRUE~1))
+#imp__data1 <- imp_data1 %>% filter(deck!="T")
+#imp_data1 <- imp__data1
+
+
+```
+
+
+Starting with some penalized regression, LASSO. 
+```{r}
+
+#prepping the data
+set.seed(124)
+x <- model.matrix(Transported ~., imp_data1)
+y <- imp_data1$Transported
+lasso_preds <- NA
+
+#creating folds
+k<- 5
+fold <- sample(1:k,nrow(imp_data1),replace = TRUE)
+
+#doing k-fold cv
+
+for (i in 1:k){
+mod.cv <- cv.glmnet(x[fold!=i,], y[fold!=i],alpha=1,family="binomial")
+ lasso_model <- glmnet(x[fold!=i,],y[fold!=i],lambda=mod.cv$lambda.min,alpha = 1,family = "binomial")
+ lasso_preds[fold==i] <- predict.glmnet(lasso_model,newx=x[fold==i,],type = "response")
+}
+
+
+prop_survive <- sum(imp_data1$Transported=="True")/length(imp_data1$Transported)
+
+lasso_probs <- exp(lasso_preds)/(1+exp(lasso_preds))
+
+lasso_predictions <- ifelse(lasso_probs>prop_survive,"True","False")
+write.csv(lasso_predictions,"lasso_predictions.csv")
+
+table(lasso_predictions,y)
+mean(lasso_predictions==y)
+
+#so starting out at 79% accuracy. 
+
+#now the test predictions
+xtest_dat <- model.matrix(~., test_imp_data1)
+
+test_pred_lasso <- predict.glmnet(lasso_model,newx=xtest_dat,type = "response")
+lasso_probs <- exp(test_pred_lasso)/(1+exp(test_pred_lasso))
+lasso_predictions_test <- ifelse(lasso_probs>prop_survive,"True","False")
+write.csv(lasso_predictions_test,"lasso_predictions_test.csv")
+
+```
+
+```{r}
+coef <- predict(lasso_model, type = "coefficients")
+
+coef
+```
+
+
+
+I want to try an elastic net across a range of potential values for alpha. 
+```{r}
+alphas <- c(0,.25,.5,.75,1)
+predictions <- matrix(data=NA,nrow=nrow(imp_data1),ncol=length(alphas))
+
+
+for (i in 1:k){
+  for (j in 1:length(alphas)){
+mod.cv <- cv.glmnet(x[fold!=i,], y[fold!=i],alpha=alphas[j],family="binomial")
+ lasso_model <- glmnet(x[fold!=i,],y[fold!=i],lambda=mod.cv$lambda.min,alpha = alphas[j],family = "binomial")
+ predictions[fold==i,j] <- predict.glmnet(lasso_model,newx=x[fold==i,],type = "response")
+  }
+}
+
+
+#set all to probabilities function
+probs <- function(x){
+  exp(x)/(1+exp(x))
+}
+
+
+predictions <- as.data.frame(predictions)
+
+#calculate probabilities
+pred_probs <- data.frame(apply(predictions,2,probs))
+
+#set to classes true or false function
+classes <- function(x){
+  ifelse(x>0.5036236,"True","False")
+}
+
+#determine classes
+pred_classes <- data.frame(apply(pred_probs,2,classes)) 
+
+#accuracy
+accuracy <- function(x){
+  mean(x==y)
+}
+
+apply(pred_classes,2,accuracy)
+#the results of this are showing that the best 
+#result is with the lasso with alpha = 1. 
+
+```
+It looks like the LASSO outperforms them. 
+
+Boosting trees
+```{r}
+
+df_boosting <- imp_data1
+df_boosting$I_transported <- (df_boosting$Transported == "True") + 0
+df_boosting = subset(df_boosting, select = -c(Transported))
+boosting_preds <- NA
+
+
+for (i in 1:k){
+boost_mod <- gbm(I_transported ~ .,data=df_boosting[fold!=i,], distribution = "bernoulli",n.tree=5000,interaction.depth=2,cv.folds = 5)
+boosting_preds[fold==i] <- predict(boost_mod, newdata = df_boosting[fold==i, ], n.trees = 5000)
+}
+
+boosting_probs <- exp(boosting_preds)/(1+exp(boosting_preds))
+
+
+predicted_classes <- ifelse(boosting_probs>prop_survive,"True","False")
+boosting_predictions <- as.factor(predicted_classes)
+
+table(imp_data1$Transported,boosting_predictions)
+mean(imp_data1$Transported==boosting_predictions)
+
+boost_preds_test <- predict(boost_mod, newdata = test_imp_data1, n.trees = 5000)
+boosting_probs <- exp(boost_preds_test)/(1+exp(boost_preds_test))
+predicted_classes <- ifelse(boosting_probs>prop_survive,"True","False")
+boosting_predictions_test <- as.factor(predicted_classes)
+write.csv(boosting_predictions_test, "boosting_predictions_test.csv")
+
+```
+
+Save CSV of boosting trees prediction
+```{r}
+write.csv(boosting_predictions, "boosting_predictions.csv")
+```
+
+
+RANDOM FOREST
+```{r}
+rf_predictions <- NA
+
+for (i in 1:k){
+  rf <- randomForest(Transported~., data = imp_data1[fold!=i,],
+mtry = 4, importance = TRUE, ntree = 500, distribution = "bernoulli")
+rf_predictions[fold==i] <-predict(rf, newdata = imp_data1[fold==i,])
+}
+
+
+rf_test_preds <- predict(rf, newdata = test_imp_data1)
+write.csv(rf_test_preds,"rf_test_preds.csv")
+
+```
+
+
+
+```{r}
+switch <- function(x){
+  x<-ifelse(x==1,'False','True')
+}
+
+rf_preds <- switch(rf_predictions)
+
+rf_means <- function(x){
+  mean(x==imp_data1$Transported)
+}
+
+rf_means(rf_preds)
+table(imp_data1$Transported,rf_preds)
+
+write.csv(rf_preds,"randomforest_preds.csv")
+
+plot(rf)
+varImpPlot(rf)
+```
+
+SUPPORT VECTOR MACHINES
+```{r}
+
+k <- 3
+set.seed(1234)
+folds <- sample(1:k, nrow(imp_data1), replace = TRUE)
+yhat <- rep(NA, nrow(imp_data1))
+for (i in 1:k){
+a <- svm(as.factor(Transported) ~ ., data = imp_data1[folds != i,], kernel = "radial", cost = 10)
+yhat[folds == i] <- as.character(predict(a, newdata  = imp_data1[folds == i,]))
+}
+
+mean(yhat == imp_data1$Transported)
+table(imp_data1$Transported,yhat)
+
+write.csv(yhat,"svm_predictions.csv")
+
+svm_test_preds <- as.character(predict(a, newdata = test_imp_data1))
+write.csv(svm_test_preds, "svm_test_preds.csv")
+
+a$nSV
+summary(a)
+```
+
+```{r}
+cols <- c("HomePlanet", "deck","side", "Destination")
+
+imp_data1[cols] <- lapply(imp_data1[cols], factor)  ## as.factor() could also be used
+
+```
+
+
+Where is there total agreement?
+```{r}
+
+boosting_predictions<-ifelse(boosting_predictions=='2',1,0)
+yhat <- ifelse(yhat=="True",1,0)
+rf_preds<-ifelse(rf_preds=='True',1,0)
+lasso_predictions <-ifelse(lasso_predictions=="True",1,0)
+pred_df <- data.frame(cbind(lasso_predictions,rf_preds,yhat, boosting_predictions))
+
+#Gonna see where the predictions have a disagreement.
+agree <- ifelse(rowSums(pred_df) %in% c(0,4), "same","diff")
+agree <- data.frame(agree)
+pred_df <- cbind(pred_df,agree,imp_data1$Transported)
+
+pred_df %>% filter(agree=="diff") %>% count()
+
+```
+not too many totally agree so abandoning the idea of the leftovers. 
+
+Okay let's do test data predictions:
+```{r}
+test <- read.csv("test.csv")
+
+boosting_predictions_test<-ifelse(boosting_predictions_test=='True',1,0)
+svm_test_preds <- ifelse(svm_test_preds=="True",1,0)
+rf_test_preds<-ifelse(rf_test_preds=='True',1,0)
+lasso_predictions_test <-ifelse(lasso_predictions_test=="True",1,0)
+
+
+test_pred_df <- data.frame(cbind(boosting_predictions_test,svm_test_preds,rf_test_preds,lasso_predictions_test))
+
+```
+
+
+how about by majority vote? 
+```{r}
+majority_vote_predictions_test <- NA
+for (i in 1:nrow(test_pred_df)){
+majority_vote_predictions_test[i]<-ifelse(sum(test_pred_df[i,1:3]==1)>1,"True","False")
+}
+
+maj_vote_test_preds <- data.frame(cbind(majority_vote_predictions_test,test$PassengerId))
+maj_vote_test_preds <- maj_vote_test_preds %>% rename(PassengerId=V2,Transported=majority_vote_predictions_test)
+write.csv(maj_vote_test_preds,"maj_vote_titanic_predictions.csv", row.names = F)
+```
+
+
+Individual SVM predictions
+```{r}
+svm_test_preds<-ifelse(svm_test_preds==1,"True","False")
+svm_preds_final <- data.frame(cbind(svm_test_preds,test$PassengerId))
+svm_preds_final <- svm_preds_final %>% rename(Transported=svm_test_preds, PassengerId=V2)
+write.csv(svm_preds_final, "svm_titanic_predictions_test.csv", row.names = F)
+```
+
+
+Individual Rf predictions
+```{r}
+rf_test_preds<-ifelse(rf_test_preds==1,"True","False")
+rf_test_preds_final <- data.frame(cbind(rf_test_preds,test$PassengerId))
+rf_test_preds_final <- rf_test_preds_final %>% rename(Transported=rf_test_preds, PassengerId=V2)
+write.csv(rf_test_preds_final, "rf_predictions_final.csv", row.names = F)
+```
+
+
